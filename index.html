@@ -154,6 +154,23 @@
   const PREFIX = "gcpov-";
   const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
+  // Route incoming audio through Web Audio so it plays on the normal media output
+  // (main speaker, wired or Bluetooth headphones) instead of the phone-call earpiece.
+  function newAudioCtx() {
+    try { if (navigator.audioSession) navigator.audioSession.type = "play-and-record"; } catch (e) {}
+    const C = window.AudioContext || window.webkitAudioContext;
+    const ctx = new C();
+    if (ctx.resume) ctx.resume().catch(() => {});
+    return ctx;
+  }
+  function playViaMedia(ctx, stream, gain) {
+    // A muted element keeps the stream flowing in Chrome; the sound comes from the AudioContext
+    const el = new Audio(); el.muted = true; el.srcObject = stream; el.play().catch(() => {});
+    const src = ctx.createMediaStreamSource(stream);
+    src.connect(gain || ctx.destination);
+    return { el, src };
+  }
+
   function show(id) { $$(".screen").forEach((s) => s.classList.toggle("active", s.id === id)); }
   function setStatus(el, msg, isErr) { el.textContent = msg || ""; el.classList.toggle("err", !!isErr); }
   function makeCode() {
@@ -168,6 +185,7 @@
   const talkers = new Map();
   const talking = new Set();
   const vr = $("vr");
+  let hostCtx = null;
 
   async function getMedia() {
     const tries = [{ video: { facingMode: facing }, audio: true }, { video: true, audio: true }];
@@ -212,10 +230,10 @@
     peer.on("call", (call) => {
       call.answer();
       call.on("stream", (remote) => {
-        let a = talkers.get(call.peer);
-        if (!a) { a = new Audio(); a.autoplay = true; talkers.set(call.peer, a); }
-        a.srcObject = remote;
-        a.play().catch(() => {});
+        if (talkers.has(call.peer)) return;
+        if (!hostCtx) hostCtx = newAudioCtx();
+        if (hostCtx.state === "suspended") hostCtx.resume().catch(() => {});
+        talkers.set(call.peer, playViaMedia(hostCtx, remote));
       });
     });
     peer.on("error", (err) => {
@@ -234,6 +252,7 @@
   async function startHost() {
     setStatus($("menuMsg"), "");
     goFullscreen(); // must run inside the tap
+    if (!hostCtx) hostCtx = newAudioCtx();
     try {
       hostStream = await getMedia();
     } catch (e) {
@@ -291,6 +310,7 @@
     if (hostPeer) { try { hostPeer.destroy(); } catch (e) {} hostPeer = null; }
     if (hostStream) { hostStream.getTracks().forEach((t) => t.stop()); hostStream = null; }
     $$(".vrVideo").forEach((v) => (v.srcObject = null));
+    if (hostCtx) { try { hostCtx.close(); } catch (e) {} hostCtx = null; }
     vr.classList.remove("hud-on");
     leaveFullscreen();
     show("menu");
@@ -314,7 +334,8 @@
   });
 
   /* ---------------- VIEWER ---------------- */
-  let vPeer = null, vConn = null, vCall = null, micStream = null, micCall = null, hostId = null;
+  let vPeer = null, vConn = null, vCall = null, micTrack = null, micCall = null, hostId = null;
+  let vCtx = null, vGain = null, silentTrack = null;
 
   function viewerMsg(msg, showTap) {
     $("viewerMsg").textContent = msg;
@@ -329,12 +350,20 @@
     setStatus($("connectStatus"), "");
     show("viewer");
     viewerMsg("Connecting…");
+    vCtx = newAudioCtx();
+    vGain = vCtx.createGain(); vGain.connect(vCtx.destination);
+    const silentDest = vCtx.createMediaStreamDestination();
+    silentTrack = silentDest.stream.getAudioTracks()[0];
     vPeer = new Peer();
     vPeer.on("open", () => {
       vConn = vPeer.connect(hostId, { reliable: true });
       let opened = false;
       const timer = setTimeout(() => { if (!opened) failJoin("No lobby found with that code."); }, 12000);
-      vConn.on("open", () => { opened = true; clearTimeout(timer); viewerMsg("Waiting for the host's video…"); });
+      vConn.on("open", () => {
+        opened = true; clearTimeout(timer); viewerMsg("Waiting for the host's video…");
+        // Open the talk-back line with silence; the real mic is only attached while the button is held
+        micCall = vPeer.call(hostId, silentDest.stream);
+      });
       vConn.on("close", () => { if (vPeer) failJoin("The host ended the lobby."); });
     });
     vPeer.on("call", (call) => {
@@ -342,7 +371,9 @@
       call.answer();
       call.on("stream", (remote) => {
         const v = $("remoteVideo");
+        v.muted = true; // sound goes through Web Audio instead
         v.srcObject = remote;
+        if (remote.getAudioTracks().length) playViaMedia(vCtx, remote, vGain);
         v.play().then(() => viewerMsg("")).catch(() => viewerMsg("Video ready", true));
       });
       call.on("close", () => { if (vPeer) failJoin("The host ended the lobby."); });
@@ -358,8 +389,9 @@
   function leave(goMenu) {
     stopTalk();
     try { if (micCall) micCall.close(); } catch (e) {}
-    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (micTrack) { micTrack.stop(); micTrack = null; }
     micCall = null;
+    if (vCtx) { try { vCtx.close(); } catch (e) {} vCtx = null; vGain = null; }
     const p = vPeer; vPeer = null; vConn = null; vCall = null;
     if (p) { try { p.destroy(); } catch (e) {} }
     $("remoteVideo").srcObject = null;
@@ -367,23 +399,25 @@
   }
 
   let talkActive = false;
+  function micSender() {
+    return micCall && micCall.peerConnection && micCall.peerConnection.getSenders().find((x) => x.track === null || x.track.kind === "audio");
+  }
   async function startTalk() {
-    if (talkActive || !vPeer || !vConn || !vConn.open) return;
+    if (talkActive || !vPeer || !vConn || !vConn.open || !micCall) return;
     talkActive = true;
-    $("remoteVideo").muted = true; // silence the host's voice on this device so the mic can't pick it up and echo it back
+    if (vGain) vGain.gain.value = 0; // silence the host's voice here so the mic can't pick it up and echo it back
     $("talkBtn").classList.add("talking"); $("talkBtn").textContent = "Talking…";
     try {
-      if (!micStream) {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-        micStream.getAudioTracks().forEach((t) => (t.enabled = false));
-        micCall = vPeer.call(hostId, micStream);
-      }
-      if (!talkActive) return;
-      micStream.getAudioTracks().forEach((t) => (t.enabled = true));
+      const ms = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+      const track = ms.getAudioTracks()[0];
+      if (!talkActive) { track.stop(); return; } // released while the permission prompt was open
+      micTrack = track;
+      const sender = micSender();
+      if (sender) await sender.replaceTrack(track);
       vConn.send({ type: "talk", on: true });
     } catch (e) {
       talkActive = false;
-      $("remoteVideo").muted = false;
+      if (vGain) vGain.gain.value = 1;
       $("talkBtn").classList.remove("talking"); $("talkBtn").textContent = "Mic blocked";
       setTimeout(() => { $("talkBtn").textContent = "Hold to talk"; }, 2500);
     }
@@ -391,9 +425,12 @@
   function stopTalk() {
     if (!talkActive) return;
     talkActive = false;
-    $("remoteVideo").muted = false;
+    if (vGain) vGain.gain.value = 1;
     $("talkBtn").classList.remove("talking"); $("talkBtn").textContent = "Hold to talk";
-    if (micStream) micStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    // Release the mic completely so the phone leaves call-audio mode between presses
+    if (micTrack) { micTrack.stop(); micTrack = null; }
+    const sender = micSender();
+    if (sender && silentTrack) sender.replaceTrack(silentTrack).catch(() => {});
     try { if (vConn && vConn.open) vConn.send({ type: "talk", on: false }); } catch (e) {}
   }
 
@@ -406,7 +443,7 @@
   $("codeIn").addEventListener("input", (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });
 
   $("btnLeave").onclick = () => leave(true);
-  $("btnTapPlay").onclick = () => { $("remoteVideo").play().then(() => viewerMsg("")).catch(() => {}); };
+  $("btnTapPlay").onclick = () => { if (vCtx && vCtx.resume) vCtx.resume(); $("remoteVideo").play().then(() => viewerMsg("")).catch(() => {}); };
   const tb = $("talkBtn");
   tb.addEventListener("pointerdown", (e) => { e.preventDefault(); tb.setPointerCapture(e.pointerId); startTalk(); });
   tb.addEventListener("pointerup", stopTalk);
