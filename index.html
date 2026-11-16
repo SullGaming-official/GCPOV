@@ -60,11 +60,11 @@
   .eye { flex: 1; position: relative; overflow: hidden; }
   .eye + .eye { border-left: 2px solid #000; }
   /* Each eye's picture is nudged toward the middle so it lines up with the Cardboard lenses */
-  #vr { --shift: 10; }
+  #vr { --shift: 10; --zoom: 1; }
   .vwrap { position: absolute; inset: 0; }
   .eye.left .vwrap { transform: translateX(calc(var(--shift) * 1%)); }
   .eye.right .vwrap { transform: translateX(calc(var(--shift) * -1%)); }
-  .eye video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; image-rendering: auto; }
+  .eye video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform: scale(var(--zoom, 1)); image-rendering: auto; }
   .eye .lens { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 62% 78% at 50% 50%, transparent 55%, #000 100%); }
 
   .hud { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1.6vh; background: rgba(8,14,26,.72); text-align: center; }
@@ -134,6 +134,7 @@
         <small>Lobby code</small><div class="hcode">-----</div>
         <div class="hcount"><span class="dot pulse"></span><span class="hcountText">0 viewers</span></div>
         <div class="htalk"></div>
+        <div class="hbtns"><button data-act="zoomout">Zoom out</button><button data-act="zoomin">Zoom in</button></div>
         <div class="hbtns"><button data-act="closer">Move closer</button><button data-act="further">Move apart</button></div>
         <div class="hbtns"><button data-act="flip">Flip camera</button><button data-act="mute" class="muteBtn">Mute mic</button><button data-act="end" class="danger">End</button></div>
       </div>
@@ -201,6 +202,14 @@
     try { localStorage.setItem("gcpov-shift", String(shift)); } catch (e) {}
   }
   applyShift(shift);
+  let zoom = 1; // 1 = whole camera frame visible; higher fills more of each eye
+  try { const z = parseFloat(localStorage.getItem("gcpov-zoom")); if (!isNaN(z)) zoom = z; } catch (e) {}
+  function applyZoom(z) {
+    zoom = Math.max(0.5, Math.min(2.5, Math.round(z * 10) / 10));
+    vr.style.setProperty("--zoom", zoom);
+    try { localStorage.setItem("gcpov-zoom", String(zoom)); } catch (e) {}
+  }
+  applyZoom(zoom);
 
   // Ask for high-resolution video (browsers default to a soft 640x480 otherwise)
   function hdVideo(extra) {
@@ -373,7 +382,9 @@
     if (btn) {
       e.stopPropagation();
       const a = btn.dataset.act;
-      if (a === "closer") applyShift(shift + 2);
+      if (a === "zoomout") applyZoom(zoom - 0.1);
+      else if (a === "zoomin") applyZoom(zoom + 0.1);
+      else if (a === "closer") applyShift(shift + 2);
       else if (a === "further") applyShift(shift - 2);
       else if (a === "flip") flipCamera();
       else if (a === "mute") toggleMic();
