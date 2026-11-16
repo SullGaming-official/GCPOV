@@ -59,7 +59,12 @@
   .eyes { position: absolute; inset: 0; display: flex; }
   .eye { flex: 1; position: relative; overflow: hidden; }
   .eye + .eye { border-left: 2px solid #000; }
-  .eye video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  /* Each eye's picture is nudged toward the middle so it lines up with the Cardboard lenses */
+  #vr { --shift: 10; }
+  .vwrap { position: absolute; inset: 0; }
+  .eye.left .vwrap { transform: translateX(calc(var(--shift) * 1%)); }
+  .eye.right .vwrap { transform: translateX(calc(var(--shift) * -1%)); }
+  .eye video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; image-rendering: auto; }
   .eye .lens { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 62% 78% at 50% 50%, transparent 55%, #000 100%); }
 
   .hud { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1.6vh; background: rgba(8,14,26,.72); text-align: center; }
@@ -67,7 +72,7 @@
   .hud small { color: var(--dim); font-size: clamp(11px, 3.2vh, 18px); }
   .hud .hcode { color: var(--live); font-weight: 800; letter-spacing: .14em; padding-left: .14em; font-size: clamp(26px, 14vh, 64px); line-height: 1; }
   .hud .hcount { font-size: clamp(12px, 3.6vh, 20px); display: flex; align-items: center; gap: 8px; }
-  .hud .hbtns { display: flex; gap: 8px; }
+  .hud .hbtns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
   .hud .hbtns button { font-size: clamp(11px, 3.2vh, 16px); padding: 1.4vh 2vh; border-radius: 10px; }
   .hud .htalk { color: var(--live); font-size: clamp(11px, 3.2vh, 16px); min-height: 1.3em; font-weight: 700; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); display: inline-block; }
@@ -122,26 +127,28 @@
 <!-- HOST: full-screen VR (Google Cardboard) -->
 <section id="vr" class="screen">
   <div class="eyes">
-    <div class="eye">
+    <div class="eye left"><div class="vwrap">
       <video class="vrVideo" autoplay playsinline muted></video><div class="lens"></div>
       <div class="tdot">Viewer talking</div>
       <div class="hud">
         <small>Lobby code</small><div class="hcode">-----</div>
         <div class="hcount"><span class="dot pulse"></span><span class="hcountText">0 viewers</span></div>
         <div class="htalk"></div>
+        <div class="hbtns"><button data-act="closer">Move closer</button><button data-act="further">Move apart</button></div>
         <div class="hbtns"><button data-act="flip">Flip camera</button><button data-act="mute" class="muteBtn">Mute mic</button><button data-act="end" class="danger">End</button></div>
       </div>
-    </div>
-    <div class="eye">
+    </div></div>
+    <div class="eye right"><div class="vwrap">
       <video class="vrVideo" autoplay playsinline muted></video><div class="lens"></div>
       <div class="tdot">Viewer talking</div>
       <div class="hud">
         <small>Lobby code</small><div class="hcode">-----</div>
         <div class="hcount"><span class="dot pulse"></span><span class="hcountText">0 viewers</span></div>
         <div class="htalk"></div>
+        <div class="hbtns"><button data-act="closer">Move closer</button><button data-act="further">Move apart</button></div>
         <div class="hbtns"><button data-act="flip">Flip camera</button><button data-act="mute" class="muteBtn">Mute mic</button><button data-act="end" class="danger">End</button></div>
       </div>
-    </div>
+    </div></div>
   </div>
   <div class="hint" id="vrHint">Tap the screen to show the code</div>
 </section>
@@ -186,9 +193,50 @@
   const talking = new Set();
   const vr = $("vr");
   let hostCtx = null;
+  let shift = 10; // percent of one eye's width each image is moved toward the centre
+  try { const v = parseFloat(localStorage.getItem("gcpov-shift")); if (!isNaN(v)) shift = v; } catch (e) {}
+  function applyShift(v) {
+    shift = Math.max(0, Math.min(30, v));
+    vr.style.setProperty("--shift", shift);
+    try { localStorage.setItem("gcpov-shift", String(shift)); } catch (e) {}
+  }
+  applyShift(shift);
+
+  // Ask for high-resolution video (browsers default to a soft 640x480 otherwise)
+  function hdVideo(extra) {
+    return Object.assign({ width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, extra || {});
+  }
+  function sharpen(track) { try { track.contentHint = "detail"; } catch (e) {} }
+
+  // Raise the send bitrate and stop the browser from shrinking the picture to save bandwidth
+  async function tuneSender(call) {
+    const pc = call && call.peerConnection;
+    if (!pc) return;
+    const sender = pc.getSenders().find((x) => x.track && x.track.kind === "video");
+    if (!sender) return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = 5000000;
+      params.encodings[0].scaleResolutionDownBy = 1;
+      params.degradationPreference = "maintain-resolution";
+      await sender.setParameters(params);
+    } catch (e) {}
+  }
+  function tuneWhenReady(call) {
+    const pc = call.peerConnection;
+    if (!pc) return;
+    pc.addEventListener("connectionstatechange", () => { if (pc.connectionState === "connected") tuneSender(call); });
+    setTimeout(() => tuneSender(call), 1500);
+    setTimeout(() => tuneSender(call), 4000);
+  }
 
   async function getMedia() {
-    const tries = [{ video: { facingMode: facing }, audio: true }, { video: true, audio: true }];
+    const tries = [
+      { video: hdVideo({ facingMode: facing }), audio: true },
+      { video: { facingMode: facing }, audio: true },
+      { video: true, audio: true },
+    ];
     let lastErr;
     for (const c of tries) { try { return await navigator.mediaDevices.getUserMedia(c); } catch (e) { lastErr = e; } }
     throw lastErr;
@@ -215,6 +263,7 @@
       conn.on("open", () => {
         const call = peer.call(conn.peer, hostStream);
         viewers.set(conn.peer, { call, conn });
+        tuneWhenReady(call);
         updateViewerCount();
         conn.on("data", (d) => {
           if (d && d.type === "talk") {
@@ -262,6 +311,7 @@
       return;
     }
     $("menuMsg").classList.remove("err");
+    hostStream.getVideoTracks().forEach(sharpen);
     micOn = true; $$(".muteBtn").forEach((b) => (b.textContent = "Mute mic"));
     $$(".vrVideo").forEach((v) => { v.srcObject = hostStream; v.play().catch(() => {}); });
     setCode("-----");
@@ -283,10 +333,11 @@
     if (!hostStream) return;
     const next = facing === "environment" ? "user" : "environment";
     let ns;
-    try { ns = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: next } }, audio: false }); }
+    try { ns = await navigator.mediaDevices.getUserMedia({ video: hdVideo({ facingMode: { exact: next } }), audio: false }); }
     catch (e) { return; }
     facing = next;
     const newTrack = ns.getVideoTracks()[0];
+    sharpen(newTrack);
     const oldTrack = hostStream.getVideoTracks()[0];
     viewers.forEach(({ call }) => {
       const s = call.peerConnection && call.peerConnection.getSenders().find((x) => x.track && x.track.kind === "video");
@@ -322,7 +373,9 @@
     if (btn) {
       e.stopPropagation();
       const a = btn.dataset.act;
-      if (a === "flip") flipCamera();
+      if (a === "closer") applyShift(shift + 2);
+      else if (a === "further") applyShift(shift - 2);
+      else if (a === "flip") flipCamera();
       else if (a === "mute") toggleMic();
       else if (a === "end") endHost();
       return;
