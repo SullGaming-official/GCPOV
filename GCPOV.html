@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GCPOV</title>
+<style>
+  :root {
+    --bg: #0f1a2e;
+    --panel: #172742;
+    --line: #2c4268;
+    --ink: #eaf1fb;
+    --dim: #8fa4c4;
+    --accent: #7fd6ff;
+    --live: #ffb347;
+    --bad: #ff6b7a;
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden; }
+  .screen { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; padding: 24px; padding-top: max(24px, env(safe-area-inset-top)); padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+  .screen.active { display: flex; }
+
+  .finder { position: relative; padding: 28px 40px; margin-bottom: 40px; }
+  .finder i { position: absolute; width: 22px; height: 22px; border: 3px solid var(--accent); }
+  .finder i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  .finder i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+  .finder i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+  .finder i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+  h1 { margin: 0; font-size: clamp(48px, 14vw, 88px); letter-spacing: .06em; font-weight: 800; line-height: 1; }
+  .tag { margin: 10px 0 0; color: var(--dim); text-align: center; font-size: 15px; max-width: 340px; }
+  .tag.err { color: var(--bad); }
+
+  .stack { display: flex; flex-direction: column; gap: 14px; width: min(360px, 100%); }
+  button { font: inherit; color: var(--ink); border-radius: 14px; padding: 16px 20px; font-weight: 700; font-size: 18px; cursor: pointer; background: var(--panel); border: 1px solid var(--line); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); color: #0b1424; border-color: var(--accent); }
+  button.ghost { background: transparent; }
+  button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+  .back { position: absolute; top: max(14px, env(safe-area-inset-top)); left: 14px; padding: 10px 14px; font-size: 15px; }
+  .status { color: var(--dim); margin: 4px 0 0; min-height: 22px; text-align: center; font-size: 15px; }
+  .status.err { color: var(--bad); }
+
+  input.codein { width: 100%; font: inherit; font-size: 36px; font-weight: 800; letter-spacing: .25em; text-align: center; text-transform: uppercase; padding: 16px 10px; border-radius: 14px; border: 2px solid var(--line); background: var(--panel); color: var(--ink); }
+  input.codein::placeholder { color: #3d5580; }
+
+  /* Viewer */
+  #viewer { padding: 0; justify-content: flex-start; background: #000; }
+  #remoteVideo { width: 100%; flex: 1; min-height: 0; object-fit: contain; background: #000; }
+  .viewbar { width: 100%; display: flex; gap: 12px; align-items: center; padding: 14px; padding-bottom: max(14px, env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--line); }
+  #talkBtn { flex: 1; padding: 20px; font-size: 20px; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #talkBtn.talking { background: var(--live); color: #1b1200; border-color: var(--live); }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 30px; background: rgba(0,0,0,.65); }
+  .overlay[hidden] { display: none; }
+
+  /* Host: full-screen Cardboard VR */
+  #vr { background: #000; padding: 0; display: none; }
+  #vr.active { display: block; }
+  .eyes { position: absolute; inset: 0; display: flex; }
+  .eye { flex: 1; position: relative; overflow: hidden; }
+  .eye + .eye { border-left: 2px solid #000; }
+  .eye video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .eye .lens { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 62% 78% at 50% 50%, transparent 55%, #000 100%); }
+
+  .hud { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 1.6vh; background: rgba(8,14,26,.72); text-align: center; }
+  #vr.hud-on .hud { display: flex; }
+  .hud small { color: var(--dim); font-size: clamp(11px, 3.2vh, 18px); }
+  .hud .hcode { color: var(--live); font-weight: 800; letter-spacing: .14em; padding-left: .14em; font-size: clamp(26px, 14vh, 64px); line-height: 1; }
+  .hud .hcount { font-size: clamp(12px, 3.6vh, 20px); display: flex; align-items: center; gap: 8px; }
+  .hud .hbtns { display: flex; gap: 8px; }
+  .hud .hbtns button { font-size: clamp(11px, 3.2vh, 16px); padding: 1.4vh 2vh; border-radius: 10px; }
+  .hud .htalk { color: var(--live); font-size: clamp(11px, 3.2vh, 16px); min-height: 1.3em; font-weight: 700; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); display: inline-block; }
+  .dot.pulse { animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .hint { position: absolute; bottom: 6vh; left: 0; right: 0; text-align: center; color: rgba(255,255,255,.8); font-size: clamp(11px, 3.2vh, 16px); pointer-events: none; transition: opacity .8s; }
+  .hint.gone { opacity: 0; }
+  /* mini talk indicator when HUD is closed */
+  .tdot { position: absolute; top: 4vh; left: 0; right: 0; text-align: center; color: var(--live); font-weight: 700; font-size: clamp(11px, 3.2vh, 16px); display: none; pointer-events: none; text-shadow: 0 0 6px #000; }
+  #vr.talking:not(.hud-on) .tdot { display: block; }
+
+  @media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } .hint { transition: none; } }
+</style>
+</head>
+<body>
+
+<!-- MAIN MENU -->
+<section id="menu" class="screen active">
+  <div class="finder"><i></i><i></i><i></i><i></i><h1>GCPOV</h1></div>
+  <div class="stack">
+    <button class="primary" id="btnCreate">Create</button>
+    <button id="btnConnect">Connect</button>
+  </div>
+  <p class="tag" id="menuMsg">Create starts your view in Cardboard VR. Connect joins someone else's.</p>
+</section>
+
+<!-- CONNECT -->
+<section id="connect" class="screen">
+  <button class="back ghost" id="connectBack">Back</button>
+  <div class="stack">
+    <label for="codeIn" style="color:var(--dim);text-align:center">Enter the lobby code</label>
+    <input class="codein" id="codeIn" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="•••••">
+    <button class="primary" id="btnJoin">Join</button>
+    <p class="status" id="connectStatus"></p>
+  </div>
+</section>
+
+<!-- VIEWER -->
+<section id="viewer" class="screen">
+  <video id="remoteVideo" autoplay playsinline></video>
+  <div class="overlay" id="viewerOverlay">
+    <div id="viewerMsg">Connecting…</div>
+    <button class="primary" id="btnTapPlay" hidden>Tap to play</button>
+  </div>
+  <div class="viewbar">
+    <button class="danger" id="btnLeave" style="padding:20px 18px;font-size:16px">Leave</button>
+    <button id="talkBtn">Hold to talk</button>
+  </div>
+</section>
+
+<!-- HOST: full-screen VR (Google Cardboard) -->
+<section id="vr" class="screen">
+  <div class="eyes">
+    <div class="eye">
+      <video class="vrVideo" autoplay playsinline muted></video><div class="lens"></div>
+      <div class="tdot">Viewer talking</div>
+      <div class="hud">
+        <small>Lobby code</small><div class="hcode">-----</div>
+        <div class="hcount"><span class="dot pulse"></span><span class="hcountText">0 viewers</span></div>
+        <div class="htalk"></div>
+        <div class="hbtns"><button data-act="flip">Flip camera</button><button data-act="mute" class="muteBtn">Mute mic</button><button data-act="end" class="danger">End</button></div>
+      </div>
+    </div>
+    <div class="eye">
+      <video class="vrVideo" autoplay playsinline muted></video><div class="lens"></div>
+      <div class="tdot">Viewer talking</div>
+      <div class="hud">
+        <small>Lobby code</small><div class="hcode">-----</div>
+        <div class="hcount"><span class="dot pulse"></span><span class="hcountText">0 viewers</span></div>
+        <div class="htalk"></div>
+        <div class="hbtns"><button data-act="flip">Flip camera</button><button data-act="mute" class="muteBtn">Mute mic</button><button data-act="end" class="danger">End</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="hint" id="vrHint">Tap the screen to show the code</div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const PREFIX = "gcpov-";
+  const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  function show(id) { $$(".screen").forEach((s) => s.classList.toggle("active", s.id === id)); }
+  function setStatus(el, msg, isErr) { el.textContent = msg || ""; el.classList.toggle("err", !!isErr); }
+  function makeCode() {
+    let c = ""; const r = crypto.getRandomValues(new Uint8Array(5));
+    for (let i = 0; i < 5; i++) c += ALPHABET[r[i] % ALPHABET.length];
+    return c;
+  }
+
+  /* ---------------- HOST ---------------- */
+  let hostPeer = null, hostStream = null, facing = "environment", micOn = true, wakeLock = null;
+  const viewers = new Map();
+  const talkers = new Map();
+  const talking = new Set();
+  const vr = $("vr");
+
+  async function getMedia() {
+    const tries = [{ video: { facingMode: facing }, audio: true }, { video: true, audio: true }];
+    let lastErr;
+    for (const c of tries) { try { return await navigator.mediaDevices.getUserMedia(c); } catch (e) { lastErr = e; } }
+    throw lastErr;
+  }
+
+  function updateViewerCount() {
+    const n = viewers.size;
+    const t = n + (n === 1 ? " viewer" : " viewers");
+    $$(".hcountText").forEach((el) => (el.textContent = t));
+  }
+  function updateTalking() {
+    const on = talking.size > 0;
+    vr.classList.toggle("talking", on);
+    $$(".htalk").forEach((el) => (el.textContent = on ? "Viewer talking" : ""));
+  }
+  function setCode(code) { $$(".hcode").forEach((el) => (el.textContent = code)); }
+
+  function startPeerWithCode(attempt) {
+    const code = makeCode();
+    const peer = new Peer(PREFIX + code);
+    hostPeer = peer;
+    peer.on("open", () => setCode(code));
+    peer.on("connection", (conn) => {
+      conn.on("open", () => {
+        const call = peer.call(conn.peer, hostStream);
+        viewers.set(conn.peer, { call, conn });
+        updateViewerCount();
+        conn.on("data", (d) => {
+          if (d && d.type === "talk") {
+            if (d.on) talking.add(conn.peer); else talking.delete(conn.peer);
+            updateTalking();
+          }
+        });
+      });
+      const drop = () => { viewers.delete(conn.peer); talkers.delete(conn.peer); talking.delete(conn.peer); updateViewerCount(); updateTalking(); };
+      conn.on("close", drop);
+      conn.on("error", drop);
+    });
+    peer.on("call", (call) => {
+      call.answer();
+      call.on("stream", (remote) => {
+        let a = talkers.get(call.peer);
+        if (!a) { a = new Audio(); a.autoplay = true; talkers.set(call.peer, a); }
+        a.srcObject = remote;
+        a.play().catch(() => {});
+      });
+    });
+    peer.on("error", (err) => {
+      if (err.type === "unavailable-id" && attempt < 5) { try { peer.destroy(); } catch (e) {} startPeerWithCode(attempt + 1); }
+      else { setCode("ERR"); }
+    });
+    peer.on("disconnected", () => { try { peer.reconnect(); } catch (e) {} });
+  }
+
+  function goFullscreen() {
+    const el = document.documentElement;
+    try { const p = el.requestFullscreen && el.requestFullscreen(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+    try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock("landscape").catch(() => {}); } catch (e) {}
+  }
+
+  async function startHost() {
+    setStatus($("menuMsg"), "");
+    goFullscreen(); // must run inside the tap
+    try {
+      hostStream = await getMedia();
+    } catch (e) {
+      leaveFullscreen();
+      $("menuMsg").textContent = "Camera or mic blocked. Allow access in your browser, then try again.";
+      $("menuMsg").classList.add("err");
+      return;
+    }
+    $("menuMsg").classList.remove("err");
+    micOn = true; $$(".muteBtn").forEach((b) => (b.textContent = "Mute mic"));
+    $$(".vrVideo").forEach((v) => { v.srcObject = hostStream; v.play().catch(() => {}); });
+    setCode("-----");
+    vr.classList.remove("hud-on", "talking");
+    $("vrHint").classList.remove("gone");
+    show("vr");
+    setTimeout(() => $("vrHint").classList.add("gone"), 5000);
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+    startPeerWithCode(0);
+  }
+
+  function leaveFullscreen() {
+    try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) {}
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) {}
+    try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+  }
+
+  async function flipCamera() {
+    if (!hostStream) return;
+    const next = facing === "environment" ? "user" : "environment";
+    let ns;
+    try { ns = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: next } }, audio: false }); }
+    catch (e) { return; }
+    facing = next;
+    const newTrack = ns.getVideoTracks()[0];
+    const oldTrack = hostStream.getVideoTracks()[0];
+    viewers.forEach(({ call }) => {
+      const s = call.peerConnection && call.peerConnection.getSenders().find((x) => x.track && x.track.kind === "video");
+      if (s) s.replaceTrack(newTrack);
+    });
+    hostStream.removeTrack(oldTrack); oldTrack.stop();
+    hostStream.addTrack(newTrack);
+    $$(".vrVideo").forEach((v) => { v.srcObject = hostStream; v.play().catch(() => {}); });
+  }
+
+  function toggleMic() {
+    if (!hostStream) return;
+    micOn = !micOn;
+    hostStream.getAudioTracks().forEach((t) => (t.enabled = micOn));
+    $$(".muteBtn").forEach((b) => (b.textContent = micOn ? "Mute mic" : "Unmute mic"));
+  }
+
+  function endHost() {
+    viewers.forEach(({ call, conn }) => { try { call.close(); conn.close(); } catch (e) {} });
+    viewers.clear(); talkers.clear(); talking.clear(); updateViewerCount(); updateTalking();
+    if (hostPeer) { try { hostPeer.destroy(); } catch (e) {} hostPeer = null; }
+    if (hostStream) { hostStream.getTracks().forEach((t) => t.stop()); hostStream = null; }
+    $$(".vrVideo").forEach((v) => (v.srcObject = null));
+    vr.classList.remove("hud-on");
+    leaveFullscreen();
+    show("menu");
+  }
+
+  // Tap anywhere on the VR view to show/hide the code panel
+  vr.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (btn) {
+      e.stopPropagation();
+      const a = btn.dataset.act;
+      if (a === "flip") flipCamera();
+      else if (a === "mute") toggleMic();
+      else if (a === "end") endHost();
+      return;
+    }
+    vr.classList.toggle("hud-on");
+    $("vrHint").classList.add("gone");
+    // re-enter fullscreen if the system dropped it
+    if (!document.fullscreenElement) goFullscreen();
+  });
+
+  /* ---------------- VIEWER ---------------- */
+  let vPeer = null, vConn = null, vCall = null, micStream = null, micCall = null, hostId = null;
+
+  function viewerMsg(msg, showTap) {
+    $("viewerMsg").textContent = msg;
+    $("btnTapPlay").hidden = !showTap;
+    $("viewerOverlay").hidden = !msg && !showTap;
+  }
+
+  function joinLobby() {
+    const code = $("codeIn").value.trim().toUpperCase();
+    if (code.length !== 5) { setStatus($("connectStatus"), "Codes are 5 characters.", true); return; }
+    hostId = PREFIX + code;
+    setStatus($("connectStatus"), "");
+    show("viewer");
+    viewerMsg("Connecting…");
+    vPeer = new Peer();
+    vPeer.on("open", () => {
+      vConn = vPeer.connect(hostId, { reliable: true });
+      let opened = false;
+      const timer = setTimeout(() => { if (!opened) failJoin("No lobby found with that code."); }, 12000);
+      vConn.on("open", () => { opened = true; clearTimeout(timer); viewerMsg("Waiting for the host's video…"); });
+      vConn.on("close", () => { if (vPeer) failJoin("The host ended the lobby."); });
+    });
+    vPeer.on("call", (call) => {
+      vCall = call;
+      call.answer();
+      call.on("stream", (remote) => {
+        const v = $("remoteVideo");
+        v.srcObject = remote;
+        v.play().then(() => viewerMsg("")).catch(() => viewerMsg("Video ready", true));
+      });
+      call.on("close", () => { if (vPeer) failJoin("The host ended the lobby."); });
+    });
+    vPeer.on("error", (err) => {
+      if (err.type === "peer-unavailable") failJoin("No lobby found with that code.");
+      else failJoin("Connection problem: " + (err.type || err.message));
+    });
+  }
+
+  function failJoin(msg) { leave(false); show("connect"); setStatus($("connectStatus"), msg, true); }
+
+  function leave(goMenu) {
+    stopTalk();
+    try { if (micCall) micCall.close(); } catch (e) {}
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    micCall = null;
+    const p = vPeer; vPeer = null; vConn = null; vCall = null;
+    if (p) { try { p.destroy(); } catch (e) {} }
+    $("remoteVideo").srcObject = null;
+    if (goMenu) show("menu");
+  }
+
+  let talkActive = false;
+  async function startTalk() {
+    if (talkActive || !vPeer || !vConn || !vConn.open) return;
+    talkActive = true;
+    $("remoteVideo").muted = true; // silence the host's voice on this device so the mic can't pick it up and echo it back
+    $("talkBtn").classList.add("talking"); $("talkBtn").textContent = "Talking…";
+    try {
+      if (!micStream) {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+        micStream.getAudioTracks().forEach((t) => (t.enabled = false));
+        micCall = vPeer.call(hostId, micStream);
+      }
+      if (!talkActive) return;
+      micStream.getAudioTracks().forEach((t) => (t.enabled = true));
+      vConn.send({ type: "talk", on: true });
+    } catch (e) {
+      talkActive = false;
+      $("remoteVideo").muted = false;
+      $("talkBtn").classList.remove("talking"); $("talkBtn").textContent = "Mic blocked";
+      setTimeout(() => { $("talkBtn").textContent = "Hold to talk"; }, 2500);
+    }
+  }
+  function stopTalk() {
+    if (!talkActive) return;
+    talkActive = false;
+    $("remoteVideo").muted = false;
+    $("talkBtn").classList.remove("talking"); $("talkBtn").textContent = "Hold to talk";
+    if (micStream) micStream.getAudioTracks().forEach((t) => (t.enabled = false));
+    try { if (vConn && vConn.open) vConn.send({ type: "talk", on: false }); } catch (e) {}
+  }
+
+  /* ---------------- WIRING ---------------- */
+  $("btnCreate").onclick = startHost;
+  $("btnConnect").onclick = () => { show("connect"); setStatus($("connectStatus"), ""); setTimeout(() => $("codeIn").focus(), 50); };
+  $("connectBack").onclick = () => show("menu");
+  $("btnJoin").onclick = joinLobby;
+  $("codeIn").addEventListener("keydown", (e) => { if (e.key === "Enter") joinLobby(); });
+  $("codeIn").addEventListener("input", (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });
+
+  $("btnLeave").onclick = () => leave(true);
+  $("btnTapPlay").onclick = () => { $("remoteVideo").play().then(() => viewerMsg("")).catch(() => {}); };
+  const tb = $("talkBtn");
+  tb.addEventListener("pointerdown", (e) => { e.preventDefault(); tb.setPointerCapture(e.pointerId); startTalk(); });
+  tb.addEventListener("pointerup", stopTalk);
+  tb.addEventListener("pointercancel", stopTalk);
+  tb.addEventListener("contextmenu", (e) => e.preventDefault());
+  tb.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) { e.preventDefault(); startTalk(); } });
+  tb.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") stopTalk(); });
+
+  window.addEventListener("beforeunload", () => { if (hostPeer) hostPeer.destroy(); if (vPeer) vPeer.destroy(); });
+})();
+</script>
+</body>
+</html>
